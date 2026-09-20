@@ -230,14 +230,23 @@ const tg = window.Telegram && window.Telegram.WebApp;
 const hasTelegram = !!(tg && tg.initData);
 
 async function request(method, path, body) {
-  const res = await fetch('/api' + path, {
-    method,
-    headers: { 'Content-Type': 'application/json', Authorization: 'tma ' + (tg ? tg.initData : '') },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch('/api' + path, {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: 'tma ' + (tg ? tg.initData : '') },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    throw new Error('Cannot reach the server. Check your internet connection and try again.');
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = new Error(data.message || 'Request failed. Please try again.');
+    const fallback = res.status === 401 || res.status === 403 ? `Your session could not be verified (HTTP ${res.status}). Close the app and open it again from the bot.`
+      : res.status === 404 ? `Server API not found (HTTP 404) at /api${path}.`
+      : res.status >= 500 ? `Server error (HTTP ${res.status}). Please try again in a moment.`
+      : `Request failed (HTTP ${res.status}). Please try again.`;
+    const err = new Error(data.message || fallback);
     err.code = data.code;
     err.data = data;
     throw err;
@@ -246,7 +255,7 @@ async function request(method, path, body) {
 }
 
 const api = {
-  config: () => fetch('/api/config').then((r) => r.json()),
+  config: () => fetch('/api/config').then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
   auth: () => request('POST', '/auth'),
   me: () => request('GET', '/me'),
   startMining: () => request('POST', '/mining/start'),
@@ -332,15 +341,16 @@ const RING = 326.7;
 
 // Saved TON wallet address: Telegram CloudStorage (synced across devices), localStorage as fallback.
 const TON_ADDR = /^([UEk0]Q[A-Za-z0-9_-]{46}|-?\d:[0-9a-fA-F]{64})$/;
+const cloudOK = () => !!(tg && tg.isVersionAtLeast && tg.isVersionAtLeast('6.9') && tg.CloudStorage);
 const addrStore = {
   load: () => new Promise((res) => {
     try {
-      if (tg && tg.CloudStorage) return tg.CloudStorage.getItem('ton_addr', (err, v) => res(err ? '' : v || ''));
+      if (cloudOK()) return tg.CloudStorage.getItem('ton_addr', (err, v) => res(err ? '' : v || ''));
     } catch { /* fall through */ }
     try { res(localStorage.getItem('ton_addr') || ''); } catch { res(''); }
   }),
   save: (v) => {
-    try { if (tg && tg.CloudStorage) tg.CloudStorage.setItem('ton_addr', v, () => {}); } catch { /* ignore */ }
+    try { if (cloudOK()) tg.CloudStorage.setItem('ton_addr', v, () => {}); } catch { /* ignore */ }
     try { localStorage.setItem('ton_addr', v); } catch { /* ignore */ }
   },
 };
